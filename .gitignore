@@ -1,0 +1,15 @@
+# Compiled class files
+*.class
+
+# IntelliJ / IDE
+*.iml
+.idea/
+*.ipr
+*.iws
+
+# Build output
+out/
+
+# OS files
+.DS_Store
+Thumbs.db

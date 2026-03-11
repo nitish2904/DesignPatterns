@@ -1,0 +1,281 @@
+@startuml Elevator System - Layered LLD
+
+title Elevator System — Layered LLD Class Diagram\nState Pattern · Strategy Pattern · Factory Pattern
+
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam defaultFontSize 11
+
+' ============================================================
+'  MODEL LAYER
+' ============================================================
+package "model" #FFEFD5 {
+    enum Direction {
+        UP
+        DOWN
+        IDLE
+    }
+
+    enum RequestType {
+        EXTERNAL
+        INTERNAL
+    }
+
+    class Request {
+        - sourceFloor : int
+        - destinationFloor : int
+        - direction : Direction
+        - type : RequestType
+        - elevatorId : String
+        + {static} external(src, dest) : Request
+        + {static} internal(id, cur, dest) : Request
+        + getSourceFloor() : int
+        + getDestinationFloor() : int
+        + getDirection() : Direction
+        + getType() : RequestType
+        + getElevatorId() : String
+    }
+
+    class Elevator {
+        - id : String
+        - currentFloor : int
+        - direction : Direction
+        - state : ElevatorState
+        - destinations : TreeSet<Integer>
+        - maxCapacity : int
+        - currentLoad : int
+        + addDestination(floor : int)
+        + hasDestinations() : boolean
+        + isIdle() : boolean
+        + getState() : ElevatorState
+        + setState(state : ElevatorState)
+        + setDirection(dir : Direction)
+        + setCurrentFloor(floor : int)
+    }
+
+    Request --> Direction
+    Request --> RequestType
+    Elevator --> Direction
+}
+
+' ============================================================
+'  STATE LAYER (State Pattern + Factory Pattern)
+' ============================================================
+package "state" #D5F5E3 {
+    enum StateType {
+        IDLE
+        MOVING_UP
+        MOVING_DOWN
+        DOOR_OPEN
+    }
+
+    interface ElevatorState <<interface>> {
+        + handleRequest(elevator, srcFloor, destFloor)
+        + move(elevator)
+        + getStateName() : String
+    }
+
+    class IdleState {
+        + handleRequest(elevator, srcFloor, destFloor)
+        + move(elevator)
+        + getStateName() : String
+    }
+
+    class MovingUpState {
+        + handleRequest(elevator, srcFloor, destFloor)
+        + move(elevator)
+        + getStateName() : String
+    }
+
+    class MovingDownState {
+        + handleRequest(elevator, srcFloor, destFloor)
+        + move(elevator)
+        + getStateName() : String
+    }
+
+    class DoorOpenState {
+        + handleRequest(elevator, srcFloor, destFloor)
+        + move(elevator)
+        + getStateName() : String
+    }
+
+    class ElevatorStateFactory <<factory>> {
+        - {static} IDLE : ElevatorState
+        - {static} MOVING_UP : ElevatorState
+        - {static} MOVING_DOWN : ElevatorState
+        - {static} DOOR_OPEN : ElevatorState
+        + {static} getState(type : StateType) : ElevatorState
+        + {static} idle() : ElevatorState
+        + {static} movingUp() : ElevatorState
+        + {static} movingDown() : ElevatorState
+        + {static} doorOpen() : ElevatorState
+    }
+
+    ElevatorState <|.. IdleState
+    ElevatorState <|.. MovingUpState
+    ElevatorState <|.. MovingDownState
+    ElevatorState <|.. DoorOpenState
+
+    ElevatorStateFactory --> StateType : uses
+    ElevatorStateFactory --> IdleState : caches
+    ElevatorStateFactory --> MovingUpState : caches
+    ElevatorStateFactory --> MovingDownState : caches
+    ElevatorStateFactory --> DoorOpenState : caches
+}
+
+Elevator --> ElevatorState : "has current state"
+
+note right of ElevatorState
+  <b>State Pattern</b>
+  Each state knows its own
+  behavior and transitions.
+  States call elevator.setState()
+  via ElevatorStateFactory singletons.
+end note
+
+note bottom of ElevatorStateFactory
+  <b>Factory Pattern</b>
+  Caches singleton state instances.
+  States are stateless → safe to share.
+end note
+
+' ============================================================
+'  STRATEGY LAYER (Strategy Pattern)
+' ============================================================
+package "strategy" #D6EAF8 {
+    interface ElevatorSelectionStrategy <<interface>> {
+        + selectElevator(elevators : List, request : Request) : Elevator
+    }
+
+    class NearestElevatorStrategy {
+        + selectElevator(elevators, request) : Elevator
+    }
+
+    class LeastLoadedElevatorStrategy {
+        + selectElevator(elevators, request) : Elevator
+    }
+
+    ElevatorSelectionStrategy <|.. NearestElevatorStrategy
+    ElevatorSelectionStrategy <|.. LeastLoadedElevatorStrategy
+}
+
+note right of ElevatorSelectionStrategy
+  <b>Strategy Pattern</b>
+  Pluggable algorithm for
+  elevator selection.
+  Swappable at runtime.
+end note
+
+' ============================================================
+'  REPOSITORY LAYER
+' ============================================================
+package "repository" #FDEBD0 {
+    class ElevatorRepository {
+        - elevators : List<Elevator>
+        + addElevator(e : Elevator)
+        + findById(id : String) : Optional<Elevator>
+        + findAll() : List<Elevator>
+        + findActive() : List<Elevator>
+    }
+
+    class RequestRepository {
+        - pendingRequests : Queue<Request>
+        - processedRequests : List<Request>
+        + enqueue(request : Request)
+        + dequeue() : Request
+        + hasPending() : boolean
+        + pendingCount() : int
+    }
+
+    ElevatorRepository --> Elevator : stores
+    RequestRepository --> Request : stores
+}
+
+' ============================================================
+'  SERVICE LAYER
+' ============================================================
+package "service" #E8DAEF {
+    class RequestService {
+        - requestRepository : RequestRepository
+        + enqueueExternalRequest(src, dest)
+        + enqueueInternalRequest(elevId, curFloor, dest)
+        + hasPendingRequests() : boolean
+        + dequeueNext() : Request
+        + pendingCount() : int
+    }
+
+    class ElevatorService {
+        - elevatorRepository : ElevatorRepository
+        + registerElevator(e : Elevator)
+        + getElevator(id) : Optional<Elevator>
+        + getAllElevators() : List<Elevator>
+        + getActiveElevators() : List<Elevator>
+        + anyActive() : boolean
+        --
+        <b>State Pattern delegation</b>
+        + handleRequest(elev, srcFloor, destFloor)
+        + move(elevator)
+        --
+        + printStatus()
+    }
+
+    class MovementService {
+        - elevatorService : ElevatorService
+        + stepElevator(elevator)
+        + stepAll()
+        + processUntilIdle()
+    }
+
+    class DispatcherService {
+        - requestService : RequestService
+        - elevatorService : ElevatorService
+        - strategy : ElevatorSelectionStrategy
+        + setStrategy(s : ElevatorSelectionStrategy)
+        + dispatchNext()
+        + dispatchAll()
+    }
+
+    RequestService --> RequestRepository
+    ElevatorService --> ElevatorRepository
+    ElevatorService ..> ElevatorState : "delegates to\ncurrent state"
+    MovementService --> ElevatorService : "calls move()"
+    DispatcherService --> RequestService
+    DispatcherService --> ElevatorService : "calls handleRequest()"
+    DispatcherService --> ElevatorSelectionStrategy : "strategy pattern"
+}
+
+' ============================================================
+'  CONTROLLER LAYER
+' ============================================================
+package "controller" #FADBD8 {
+    class ExternalRequestController {
+        - requestService : RequestService
+        + pressFloorButton(srcFloor, destFloor)
+    }
+
+    class InternalRequestController {
+        - requestService : RequestService
+        + pressCabinButton(elevId, curFloor, destFloor)
+    }
+
+    class ElevatorController {
+        - elevatorService : ElevatorService
+        - dispatcherService : DispatcherService
+        - movementService : MovementService
+        + addElevator(e : Elevator)
+        + dispatchAllRequests()
+        + stepAll()
+        + processAllMovements()
+        + setStrategy(s : ElevatorSelectionStrategy)
+        + printStatus()
+    }
+
+    ExternalRequestController --> RequestService
+    InternalRequestController --> RequestService
+    ElevatorController --> ElevatorService
+    ElevatorController --> DispatcherService
+    ElevatorController --> MovementService
+}
+
+@enduml

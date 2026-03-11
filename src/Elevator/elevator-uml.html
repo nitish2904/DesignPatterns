@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Elevator UML</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<style>
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;padding:20px;text-align:center}
+h1{color:#667eea;margin-bottom:4px}
+.sub{color:#888;margin-bottom:20px}
+.diagram{background:#fff;border-radius:12px;padding:20px;display:inline-block;text-align:left;max-width:100%;overflow:auto}
+</style></head><body>
+<h1>Elevator System — UML Class Diagram</h1>
+<p class="sub">Layered Architecture · State Pattern · Strategy Pattern · Factory Pattern</p>
+<div class="diagram"><pre class="mermaid">
+classDiagram
+    direction TB
+
+    class Direction{
+        &lt;&lt;enum&gt;&gt;
+        UP
+        DOWN
+        IDLE
+    }
+    class RequestType{
+        &lt;&lt;enum&gt;&gt;
+        EXTERNAL
+        INTERNAL
+    }
+    class StateType{
+        &lt;&lt;enum&gt;&gt;
+        IDLE
+        MOVING_UP
+        MOVING_DOWN
+        DOOR_OPEN
+    }
+    class Request{
+        -int sourceFloor
+        -int destinationFloor
+        -Direction direction
+        -RequestType type
+        -String elevatorId
+        +external(src,dest)$ Request
+        +internal(id,cur,dest)$ Request
+    }
+    class Elevator{
+        -String id
+        -int currentFloor
+        -Direction direction
+        -ElevatorState state
+        -TreeSet destinations
+        -int maxCapacity
+        -int currentLoad
+        +addDestination(floor)
+        +hasDestinations() bool
+        +isIdle() bool
+    }
+
+    class ElevatorState{
+        &lt;&lt;interface&gt;&gt;
+        +handleRequest(elev,src,dest)
+        +move(elevator)
+        +getStateName() String
+    }
+    class IdleState
+    class MovingUpState
+    class MovingDownState
+    class DoorOpenState
+
+    class ElevatorStateFactory{
+        -ElevatorState IDLE$
+        -ElevatorState MOVING_UP$
+        -ElevatorState MOVING_DOWN$
+        -ElevatorState DOOR_OPEN$
+        +getState(StateType)$ ElevatorState
+        +idle()$ ElevatorState
+        +movingUp()$ ElevatorState
+        +movingDown()$ ElevatorState
+        +doorOpen()$ ElevatorState
+    }
+
+    ElevatorState <|.. IdleState : implements
+    ElevatorState <|.. MovingUpState : implements
+    ElevatorState <|.. MovingDownState : implements
+    ElevatorState <|.. DoorOpenState : implements
+    ElevatorStateFactory --> StateType : uses
+    ElevatorStateFactory --> ElevatorState : creates/caches
+    ElevatorStateFactory --> IdleState : caches
+    ElevatorStateFactory --> MovingUpState : caches
+    ElevatorStateFactory --> MovingDownState : caches
+    ElevatorStateFactory --> DoorOpenState : caches
+
+    class ElevatorSelectionStrategy{
+        &lt;&lt;interface&gt;&gt;
+        +selectElevator(elevators,req) Elevator
+    }
+    class NearestElevatorStrategy{
+        +selectElevator(elevators,req) Elevator
+    }
+    class LeastLoadedElevatorStrategy{
+        +selectElevator(elevators,req) Elevator
+    }
+    ElevatorSelectionStrategy <|.. NearestElevatorStrategy : implements
+    ElevatorSelectionStrategy <|.. LeastLoadedElevatorStrategy : implements
+
+    class ElevatorRepository{
+        -List elevators
+        +addElevator(e)
+        +findById(id) Optional
+        +findAll() List
+        +findActive() List
+    }
+    class RequestRepository{
+        -Queue pendingRequests
+        -List processedRequests
+        +enqueue(req)
+        +dequeue() Request
+        +hasPending() bool
+    }
+
+    class RequestService{
+        +enqueueExternalRequest(src,dest)
+        +enqueueInternalRequest(id,cur,dest)
+        +hasPendingRequests() bool
+        +dequeueNext() Request
+    }
+    class ElevatorService{
+        +registerElevator(e)
+        +getElevator(id) Optional
+        +getAllElevators() List
+        +anyActive() bool
+        +handleRequest(elev,src,dest)
+        +move(elevator)
+        +printStatus()
+    }
+    class MovementService{
+        +stepElevator(e)
+        +stepAll()
+        +processUntilIdle()
+    }
+    class DispatcherService{
+        -ElevatorSelectionStrategy strategy
+        +setStrategy(s)
+        +dispatchNext()
+        +dispatchAll()
+    }
+
+    class ExternalRequestController{
+        +pressFloorButton(src,dest)
+    }
+    class InternalRequestController{
+        +pressCabinButton(id,cur,dest)
+    }
+    class ElevatorController{
+        +addElevator(e)
+        +dispatchAllRequests()
+        +stepAll()
+        +processAllMovements()
+        +setStrategy(s)
+        +printStatus()
+    }
+
+    Request --> Direction
+    Request --> RequestType
+    Elevator --> Direction
+    Elevator --> ElevatorState : has current state
+
+    ElevatorRepository --> Elevator : stores
+    RequestRepository --> Request : stores
+
+    RequestService --> RequestRepository
+    ElevatorService --> ElevatorRepository
+    ElevatorService --> ElevatorState : delegates to state
+    MovementService --> ElevatorService : calls move()
+    DispatcherService --> RequestService
+    DispatcherService --> ElevatorService : calls handleRequest()
+    DispatcherService --> ElevatorSelectionStrategy : strategy pattern
+
+    ExternalRequestController --> RequestService
+    InternalRequestController --> RequestService
+    ElevatorController --> ElevatorService
+    ElevatorController --> DispatcherService
+    ElevatorController --> MovementService
+</pre></div>
+<script>mermaid.initialize({startOnLoad:true,theme:'default'});</script>
+</body></html>
