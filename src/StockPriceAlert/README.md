@@ -379,6 +379,150 @@ The Alert Evaluator fires at the **minimum threshold** across all subscribers fo
 
 ---
 
+---
+
+## 7. Deep Dive: Price Data Storage Strategy (Multi-Resolution Rollups)
+
+A natural question arises: if a user can configure baselines at minute, daily, weekly, or monthly granularity, **do we store every second of tick data for every stock?**
+
+### 7.1 Why NOT Store Every-Second Data
+
+| Metric | Value |
+|--------|-------|
+| Stocks | 10,000 |
+| Seconds in a trading day (~6.5 hrs) | ~23,400 |
+| Records per day | 10 K × 23.4 K = **234 M rows/day** |
+| Record size | ~100 B (symbol, price, timestamp) |
+| Daily storage | **~23 GB/day** |
+| Yearly storage | **~5.8 TB/year** |
+
+This is prohibitively expensive, and most of this data is never queried in real-time. The Alert Evaluator only needs `currentPrice` vs. `closingPrice` — it does not need historical tick-by-tick records.
+
+### 7.2 Two Distinct Access Patterns
+
+| Pattern | What It Needs | Storage |
+|---------|---------------|---------|
+| **Hot Path: Real-time Alert Evaluation** | Latest tick price + closing price for the configured baseline | **Redis only** — overwrite current price on every tick; store a handful of closing prices per symbol. 10 K stocks × a few closing prices = **< 1 MB**. |
+| **Warm/Cold Path: Historical Analysis & Closing Price Computation** | Aggregated price data (candles) to compute closing prices for various intervals | **Time-Series DB** (TimescaleDB / InfluxDB) with multi-resolution rollups. |
+
+### 7.3 Multi-Resolution Rollup Architecture
+
+Instead of storing every second forever, use **OHLCV candles** (Open, High, Low, Close, Volume) at decreasing granularity — the standard approach in financial systems:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        RAW TICK DATA                             │
+│                                                                  │
+│  • Lives in Kafka (stock-prices topic)                           │
+│  • Retention: 24–72 hours                                        │
+│  • NOT persisted to disk long-term                               │
+│  • Used only for real-time alert evaluation                      │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ Kafka Streams / Apache Flink
+                           │ (continuous aggregation jobs)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│            TIME-SERIES DATABASE (TimescaleDB / InfluxDB)         │
+│                                                                  │
+│  ┌─────────────────┬──────────────────────┬──────────────────┐  │
+│  │   Resolution    │   Retention Policy   │  Storage / Year  │  │
+│  ├─────────────────┼──────────────────────┼──────────────────┤  │
+│  │  1-MINUTE       │  7 days              │  ~100 GB         │  │
+│  │  candles        │  (auto-expire)       │                  │  │
+│  ├─────────────────┼──────────────────────┼──────────────────┤  │
+│  │  1-HOUR         │  90 days             │  ~5 GB           │  │
+│  │  candles        │  (auto-expire)       │                  │  │
+│  ├─────────────────┼──────────────────────┼──────────────────┤  │
+│  │  1-DAY          │  Forever             │  ~1 GB / year    │  │
+│  │  candles        │                      │                  │  │
+│  ├─────────────────┼──────────────────────┼──────────────────┤  │
+│  │  1-WEEK         │  Forever             │  ~200 MB         │  │
+│  │  candles        │                      │                  │  │
+│  ├─────────────────┼──────────────────────┼──────────────────┤  │
+│  │  1-MONTH        │  Forever             │  ~25 MB          │  │
+│  │  candles        │                      │                  │  │
+│  └─────────────────┴──────────────────────┴──────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Candle schema (OHLCV):**
+```json
+{
+  "symbol": "UBER",
+  "interval": "1m",
+  "timestamp": "2026-03-24T15:30:00Z",
+  "open": 98.50,
+  "high": 99.10,
+  "low": 98.20,
+  "close": 99.01,
+  "volume": 142000
+}
+```
+
+### 7.4 How Closing Prices Are Computed
+
+| Baseline | Source | When Computed | Example |
+|----------|--------|---------------|---------|
+| **Daily close** | Last 1-minute candle's `close` before market close (4:00 PM ET) | Cron job at 4:01 PM ET | Friday's 3:59 PM candle → `close` field |
+| **Weekly close** | Friday's daily candle `close` | Cron job Friday 4:01 PM ET | Friday's daily candle |
+| **Monthly close** | Last trading day of the month's daily candle `close` | Cron job on last trading day at 4:01 PM ET | March 31st daily candle |
+
+Once computed, closing prices are written to **Redis** for the Alert Evaluator:
+
+```
+Redis keys:
+  closing:UBER:daily   → 85.04
+  closing:UBER:weekly  → 82.30
+  closing:UBER:monthly → 78.15
+```
+
+### 7.5 Updated Data Flow with Rollups
+
+```
+External Feed (100K ticks/sec)
+    │
+    ├──────────────────────────────────── Alert Evaluator (real-time)
+    │                                          │
+    ▼                                     Redis (latest price +
+Kafka (stock-prices topic)                 closing prices only)
+    │  retention: 24–72 hrs
+    │
+    ▼
+Aggregation Job (Kafka Streams / Flink)
+    │
+    │ Computes OHLCV candles per interval
+    │ (tumbling windows: 1m, 1h, 1d, 1w, 1mo)
+    ▼
+TimescaleDB / InfluxDB
+    │
+    │ Multi-resolution candle storage
+    │ with auto-expiry retention policies
+    ▼
+Closing Price Cron Job (at market close)
+    │
+    │ Reads latest candle for each baseline
+    │ Writes to Redis
+    ▼
+Redis: closing:{symbol}:{baseline} → price
+```
+
+### 7.6 Storage Comparison
+
+| Approach | Storage / Year | Notes |
+|----------|---------------|-------|
+| Store every second (naïve) | **~5.8 TB** | Unmanageable, mostly unused |
+| Multi-resolution rollups | **~1–2 GB** (daily candles retained forever) | 3000× reduction; higher-res candles auto-expire |
+
+### 7.7 Key Takeaways
+
+1. **Don't persist every-second data permanently** — let Kafka hold raw ticks for 24–72 hours (for replay / reprocessing), then let them expire.
+2. **Aggregate into OHLCV candles** using stream processing (Kafka Streams / Flink) — this is the industry-standard approach in financial data systems.
+3. **Only closing prices live in Redis** — the Alert Evaluator's hot path needs just `currentPrice` vs. `closingPrice`, not full history.
+4. **TimescaleDB / InfluxDB for historical queries** — if you need "what was UBER's price at 2:35 PM last Tuesday?", query the 1-minute candle table (retained for 7 days). For older data, use hourly or daily candles.
+5. **Retention policies automate cleanup** — no manual data purging needed.
+
+---
+
 ## Summary
 
 This system follows an **event-driven, streaming architecture** built around Kafka as the central nervous system. The pipeline is:
@@ -387,4 +531,4 @@ This system follows an **event-driven, streaming architecture** built around Kaf
 Feed → Ingest → Kafka → Evaluate → Kafka → Fan-out → Queue → Deliver
 ```
 
-Each stage is independently scalable, fault-tolerant, and loosely coupled. The use of Redis for hot data (closing prices, subscriber lists, cooldowns) ensures sub-millisecond lookups on the critical path, while Postgres serves as the durable source of truth.
+Each stage is independently scalable, fault-tolerant, and loosely coupled. The use of Redis for hot data (closing prices, subscriber lists, cooldowns) ensures sub-millisecond lookups on the critical path, while Postgres serves as the durable source of truth. Price data is stored using **multi-resolution OHLCV candle rollups** in a time-series database — avoiding the cost of storing every-second tick data while still supporting flexible baseline intervals (daily, weekly, monthly).
